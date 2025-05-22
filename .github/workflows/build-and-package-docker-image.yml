@@ -1,0 +1,46 @@
+name: Build and Package Docker Image
+env:
+  DOTNET_VERSION: '6.0.x'
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - apps/api/**
+  workflow_dispatch:
+
+jobs:
+  build-and-package-image:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: './apps/api'
+    steps:
+      - name: 'Checkout GitHub Action'
+        uses: actions/checkout@v4
+        
+      - name: 'Build Docker Image'
+        run: |
+          docker build . --tag firecrawl:latest
+          
+      - name: 'Save Docker Image to TAR file'
+        run: |
+          docker save firecrawl:latest -o firecrawl-image.tar
+          
+      - name: 'Compress TAR file'
+        run: |
+          gzip firecrawl-image.tar
+          
+      - name: 'Upload Docker Image Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: firecrawl-docker-image
+          path: ./apps/api/firecrawl-image.tar.gz
+          retention-days: 30
+          
+      - name: 'Show artifact info'
+        run: |
+          echo "Docker image has been packaged and uploaded as artifact"
+          echo "Artifact name: firecrawl-docker-image"
+          echo "File: firecrawl-image.tar.gz"
+          ls -lh firecrawl-image.tar.gz
