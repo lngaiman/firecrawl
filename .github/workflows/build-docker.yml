@@ -20,13 +20,30 @@ jobs:
       
     - name: Install Docker Compose
       run: |
+        # 安装 Docker 官方仓库
         sudo apt-get update
-        sudo apt-get install docker-compose-plugin
+        sudo apt-get install -y ca-certificates curl gnupg lsb-release
+        
+        # 添加 Docker 官方 GPG 密钥
+        sudo mkdir -p /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        
+        # 添加 Docker 仓库
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # 更新包列表并安装 docker-compose-plugin
+        sudo apt-get update
+        sudo apt-get install -y docker-compose-plugin
+        
+        # 验证安装
+        docker compose version
         
     - name: Build Docker images
       run: |
-        # 构建镜像
-        docker-compose build
+        # 构建镜像（使用新的 docker compose 命令）
+        docker compose build
         
     - name: List built images
       run: |
@@ -146,16 +163,16 @@ jobs:
         
         4. 启动服务：
            ```bash
-           docker-compose up -d
+           docker compose up -d
            ```
         
         5. 验证服务：
            ```bash
            # 检查服务状态
-           docker-compose ps
+           docker compose ps
            
            # 查看日志
-           docker-compose logs -f
+           docker compose logs -f
            ```
         
         ## 服务端口
