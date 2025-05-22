@@ -1,0 +1,306 @@
+name: Build and Package Firecrawl Docker Images
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Install Docker Compose
+      run: |
+        sudo apt-get update
+        sudo apt-get install docker-compose-plugin
+        
+    - name: Build Docker images
+      run: |
+        # 构建镜像
+        docker-compose build
+        
+    - name: List built images
+      run: |
+        echo "Built images:"
+        docker images --filter "reference=firecrawl*" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+        
+    - name: Save Docker images to tar files
+      run: |
+        # 创建输出目录
+        mkdir -p docker-images
+        
+        # 获取所有相关镜像名称
+        IMAGES=$(docker images --filter "reference=firecrawl*" --format "{{.Repository}}:{{.Tag}}")
+        
+        # 保存每个镜像为单独的tar文件
+        for image in $IMAGES; do
+          # 将镜像名称中的特殊字符替换为下划线，用作文件名
+          filename=$(echo "$image" | sed 's/[\/:]/_/g')
+          echo "Saving $image as ${filename}.tar"
+          docker save "$image" | gzip > "docker-images/${filename}.tar.gz"
+        done
+        
+        # 保存 Redis 镜像（因为 docker-compose 中使用了）
+        echo "Saving Redis image..."
+        docker pull redis:alpine
+        docker save redis:alpine | gzip > "docker-images/redis_alpine.tar.gz"
+        
+        # 创建所有镜像的合并包
+        echo "Creating combined archive..."
+        tar -czf firecrawl-docker-images.tar.gz docker-images/
+        
+    - name: Create docker-compose and .env template
+      run: |
+        # 创建部署包目录
+        mkdir -p deployment-package
+        
+        # 复制 docker-compose.yaml
+        cp docker-compose.yaml deployment-package/
+        
+        # 创建 .env 模板文件
+        cat > deployment-package/.env.template << 'EOF'
+        # Redis Configuration
+        REDIS_URL=redis://redis:6379
+        
+        # Playwright Service Configuration
+        PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/scrape
+        PROXY_SERVER=
+        PROXY_USERNAME=
+        PROXY_PASSWORD=
+        BLOCK_MEDIA=
+        
+        # API Configuration
+        PORT=3002
+        INTERNAL_PORT=3002
+        USE_DB_AUTHENTICATION=
+        
+        # AI/ML Configuration
+        OPENAI_API_KEY=
+        OPENAI_BASE_URL=
+        MODEL_NAME=
+        MODEL_EMBEDDING_NAME=
+        OLLAMA_BASE_URL=
+        
+        # Monitoring and Analytics
+        SLACK_WEBHOOK_URL=
+        BULL_AUTH_KEY=
+        TEST_API_KEY=
+        POSTHOG_API_KEY=
+        POSTHOG_HOST=
+        
+        # Database Configuration
+        SUPABASE_ANON_TOKEN=
+        SUPABASE_URL=
+        SUPABASE_SERVICE_TOKEN=
+        
+        # Webhook Configuration
+        SELF_HOSTED_WEBHOOK_URL=
+        
+        # Search API Configuration
+        SERPER_API_KEY=
+        SEARCHAPI_API_KEY=
+        SEARXNG_ENDPOINT=
+        SEARXNG_ENGINES=
+        SEARXNG_CATEGORIES=
+        
+        # Logging
+        LOGGING_LEVEL=info
+        EOF
+        
+        # 创建部署说明文件
+        cat > deployment-package/README.md << 'EOF'
+        # Firecrawl Docker Deployment
+        
+        ## 部署步骤
+        
+        1. 解压 `firecrawl-docker-images.tar.gz` 文件
+        2. 加载所有 Docker 镜像：
+           ```bash
+           # 进入解压后的目录
+           cd docker-images
+           
+           # 加载所有镜像
+           for file in *.tar.gz; do
+             echo "Loading $file..."
+             docker load < "$file"
+           done
+           ```
+        
+        3. 配置环境变量：
+           ```bash
+           # 复制环境变量模板
+           cp .env.template .env
+           
+           # 编辑 .env 文件，填入你的配置
+           nano .env
+           ```
+        
+        4. 启动服务：
+           ```bash
+           docker-compose up -d
+           ```
+        
+        5. 验证服务：
+           ```bash
+           # 检查服务状态
+           docker-compose ps
+           
+           # 查看日志
+           docker-compose logs -f
+           ```
+        
+        ## 服务端口
+        
+        - API 服务：http://localhost:3002
+        - Playwright 服务：内部端口 3000
+        - Redis：内部端口 6379
+        
+        ## 停止服务
+        
+        ```bash
+        docker-compose down
+        ```
+        
+        ## 更新镜像的 docker-compose.yaml
+        
+        请注意：部署时需要修改 docker-compose.yaml 文件，将 `build:` 行注释掉，并取消注释 `image:` 行，使用预构建的镜像。
+        EOF
+        
+        # 创建修改后的 docker-compose.yaml（用于部署）
+        cat > deployment-package/docker-compose.yaml << 'EOF'
+        name: firecrawl
+        
+        x-common-service: &common-service
+          # 使用预构建的镜像而不是构建
+          image: firecrawl-api:latest
+          # build: apps/api  # 注释掉构建指令
+        
+          ulimits:
+            nofile:
+              soft: 65535
+              hard: 65535
+          networks:
+            - backend
+          extra_hosts:
+            - "host.docker.internal:host-gateway"
+        
+        x-common-env: &common-env
+          REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+          REDIS_RATE_LIMIT_URL: ${REDIS_URL:-redis://redis:6379}
+          PLAYWRIGHT_MICROSERVICE_URL: ${PLAYWRIGHT_MICROSERVICE_URL:-http://playwright-service:3000/scrape}
+          USE_DB_AUTHENTICATION: ${USE_DB_AUTHENTICATION}
+          OPENAI_API_KEY: ${OPENAI_API_KEY}
+          OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+          MODEL_NAME: ${MODEL_NAME}
+          MODEL_EMBEDDING_NAME: ${MODEL_EMBEDDING_NAME} 
+          OLLAMA_BASE_URL: ${OLLAMA_BASE_URL} 
+          SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+          BULL_AUTH_KEY: ${BULL_AUTH_KEY}
+          TEST_API_KEY: ${TEST_API_KEY}
+          POSTHOG_API_KEY: ${POSTHOG_API_KEY}
+          POSTHOG_HOST: ${POSTHOG_HOST}
+          SUPABASE_ANON_TOKEN: ${SUPABASE_ANON_TOKEN}
+          SUPABASE_URL: ${SUPABASE_URL}
+          SUPABASE_SERVICE_TOKEN: ${SUPABASE_SERVICE_TOKEN}
+          SELF_HOSTED_WEBHOOK_URL: ${SELF_HOSTED_WEBHOOK_URL}
+          SERPER_API_KEY: ${SERPER_API_KEY}
+          SEARCHAPI_API_KEY: ${SEARCHAPI_API_KEY}
+          LOGGING_LEVEL: ${LOGGING_LEVEL}
+          PROXY_SERVER: ${PROXY_SERVER}
+          PROXY_USERNAME: ${PROXY_USERNAME}
+          PROXY_PASSWORD: ${PROXY_PASSWORD}
+          SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
+          SEARXNG_ENGINES: ${SEARXNG_ENGINES}
+          SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
+        
+        services:
+          playwright-service:
+            image: firecrawl-playwright-service:latest
+            # build: apps/playwright-service-ts  # 注释掉构建指令
+            environment:
+              PORT: 3000
+              PROXY_SERVER: ${PROXY_SERVER}
+              PROXY_USERNAME: ${PROXY_USERNAME}
+              PROXY_PASSWORD: ${PROXY_PASSWORD}
+              BLOCK_MEDIA: ${BLOCK_MEDIA}
+            networks:
+              - backend
+        
+          api:
+            <<: *common-service
+            environment:
+              <<: *common-env
+              HOST: "0.0.0.0"
+              PORT: ${INTERNAL_PORT:-3002}
+              FLY_PROCESS_GROUP: app
+            depends_on:
+              - redis
+              - playwright-service
+            ports:
+              - "${PORT:-3002}:${INTERNAL_PORT:-3002}"
+            command: [ "pnpm", "run", "start:production" ]
+        
+          worker:
+            <<: *common-service
+            environment:
+              <<: *common-env
+              FLY_PROCESS_GROUP: worker
+            depends_on:
+              - redis
+              - playwright-service
+              - api
+            command: [ "pnpm", "run", "workers" ]
+        
+          redis:
+            image: redis:alpine
+            networks:
+              - backend
+            command: redis-server --bind 0.0.0.0
+        
+        networks:
+          backend:
+            driver: bridge
+        EOF
+        
+    - name: Create deployment package
+      run: |
+        # 将部署文件和镜像打包
+        tar -czf firecrawl-deployment-package.tar.gz deployment-package/ firecrawl-docker-images.tar.gz
+        
+    - name: Generate file list
+      run: |
+        echo "Generated files:"
+        ls -la *.tar.gz
+        echo ""
+        echo "File sizes:"
+        du -h *.tar.gz
+        
+    - name: Upload Docker images as artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: firecrawl-docker-images
+        path: firecrawl-docker-images.tar.gz
+        retention-days: 7
+        
+    - name: Upload deployment package as artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: firecrawl-deployment-package
+        path: firecrawl-deployment-package.tar.gz
+        retention-days: 7
+        
+    - name: Upload individual image files
+      uses: actions/upload-artifact@v4
+      with:
+        name: firecrawl-individual-images
+        path: docker-images/
+        retention-days: 7
